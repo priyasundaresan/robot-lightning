@@ -183,10 +183,8 @@ class InteractiveBot:
         waypoints_ui = np.zeros_like(np.array(waypoints))
         transf = R.from_euler('x', -90, degrees=True)
         waypoints_ui = transf.apply(waypoints)
-        #waypoints_ui[:,0] = waypoints[:,0]
-        #waypoints_ui[:,1] = waypoints[:,2]
-        #waypoints_ui[:,2] = waypoints[:,1]
-        waypoints_ui *= 10
+        rescale_amt = 10
+        waypoints_ui *= rescale_amt
         return waypoints_ui
 
     def test_ui(self):
@@ -197,7 +195,8 @@ class InteractiveBot:
 
         rgb_frame, depth_frame = self.take_rgbd()
         pointcloud = self.rgbd2pointCloud(rgb_frame, depth_frame)
-        idxs = np.random.choice(np.arange(len(pointcloud.points)), 5000, replace=False)
+
+        idxs = np.random.choice(np.arange(len(pointcloud.points)), 20000, replace=False)
         points = np.asarray(pointcloud.points)[idxs]
         colors = np.asarray(pointcloud.colors)[idxs]
         points_ui = self.transform_waypoints_to_uiframe(points)

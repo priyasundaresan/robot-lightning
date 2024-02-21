@@ -55,7 +55,7 @@ def transform_points(tf, points_3d):
     #print(points_3d_transf.shape)
     return points_3d_transf
 
-def crop(pcd, min_bound=[0.2,-0.3,0.125], max_bound=[0.9, 0.4, 0.5]):
+def crop(pcd, min_bound=[0.0,-0.35,-0.05], max_bound=[0.9, 0.4, 1.0]):
     idxs = np.logical_and(np.logical_and(
                   np.logical_and(pcd[:,0] > min_bound[0], pcd[:,0] < max_bound[0]),
                   np.logical_and(pcd[:,1] > min_bound[1], pcd[:,1] < max_bound[1])),
