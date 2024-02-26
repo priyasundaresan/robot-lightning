@@ -26,15 +26,15 @@ import time
 
 from queue import Queue
 
-def adjust_rotation(value):
-    if math.isclose(value, -math.pi):
-        return 0
-    else:
-        return value
+#def adjust_rotation(value):
+#    if math.isclose(value, -math.pi):
+#        return -math.pi
+#    else:
+#        return value
 
 class MyWebSocketHandler:
-    def __init__(self, shared_ee_pos_cmd):
-        self.shared_ee_pos_cmd = shared_ee_pos_cmd
+    def __init__(self, shared_pose):
+        self.shared_pose = shared_pose
 
     async def websocket_handler(self, websocket, path):
         async for message in websocket:
@@ -42,15 +42,20 @@ class MyWebSocketHandler:
             # The rest of your message handling logic...
             orientation = data['orientation']
             # Update shared array with ee_pos_cmd
-            with self.shared_ee_pos_cmd.get_lock():
+            with self.shared_pose.get_lock():
                 data['gripper_open'] = data.get('url') == 'http://localhost:8080/robotiq.obj'
                 if 'url' in data: del data['url']
 
                 fingertip_ui_pos = np.array([data['position']['x'], data['position']['y'], data['position']['z']]).squeeze()
+                rotation = np.array([data['orientation']['x'], data['orientation']['y'], data['orientation']['z']])
 
-                self.shared_ee_pos_cmd[0] = fingertip_ui_pos[0]
-                self.shared_ee_pos_cmd[1] = fingertip_ui_pos[1]
-                self.shared_ee_pos_cmd[2] = fingertip_ui_pos[2]
+                self.shared_pose[0] = fingertip_ui_pos[0]
+                self.shared_pose[1] = fingertip_ui_pos[1]
+                self.shared_pose[2] = fingertip_ui_pos[2]
+                self.shared_pose[3] = rotation[0]
+                self.shared_pose[4] = rotation[1]
+                self.shared_pose[5] = rotation[2]
+                self.shared_pose[6] = not data['gripper_open']
 
 class InteractiveBot:
     def __init__(self, config):
@@ -110,14 +115,26 @@ class InteractiveBot:
         ee_euler = R.from_quat(ee_quat).as_euler("xyz")
         gripper_width = obs['state']['gripper_pos']
     
-        gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
-        gen_ori = get_ori(ee_euler, target_euler, num_steps)
 
-        for i in range(1, num_steps+1):
-            next_ee_pos = gen_waypoint(i)
-            next_ee_euler = gen_ori(i)
-            action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
-            self.env.step(action)
+        positional_delta = np.linalg.norm(target_pos - ee_pos)
+        rotational_delta = np.linalg.norm(target_euler - ee_euler)
+
+        if positional_delta > 0.01:
+            gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
+            gen_ori = get_ori(ee_euler, target_euler, num_steps)
+            for i in range(1, num_steps+1):
+                next_ee_pos = gen_waypoint(i)
+                next_ee_euler = gen_ori(i)
+                action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
+                self.env.step(action)
+        else:
+            #num_steps = int(rotational_delta * 100)
+            num_steps = 30
+            gen_ori = get_ori(ee_euler, target_euler, num_steps)
+            for i in range(1, num_steps):
+                next_ee_euler = gen_ori(i)
+                action = np.hstack((ee_pos, next_ee_euler, gripper_width))
+                self.env.step(action)
 
     def close_gripper(self):
         obs = self.env._get_obs()
@@ -294,9 +311,15 @@ class InteractiveBot:
         ee_quat = obs['state']['ee_quat']
         ee_euler = R.from_quat(ee_quat).as_euler("xyz")
         fingertip_pos = ee_pos.copy() + self.calculate_fingertip_offset(ee_euler)
+        gripper_closed = obs['state']['gripper_pos'] > 0.5
 
         fingertip_pos_ui = self.transform_robotframe_to_uiframe(fingertip_pos.reshape(1, 3)).squeeze()
-        fingertip_pos_code = 'new THREE.Vector3(%.2f, %2.f, %2.f);\n'%(fingertip_pos_ui[0], fingertip_pos_ui[1], fingertip_pos_ui[2])
+        #ee_euler_ui = (R.from_euler('x', -90, degrees=True)*R.from_euler('xyz', ee_euler, degrees=False)).as_euler('xyz', degrees=False)
+        #ee_euler_ui = ee_euler.copy() + [np.pi, 0, 0]
+        ee_euler_ui = np.zeros(3)
+
+        fingertip_pos_code = 'new THREE.Vector3(%.2f, %.2f, %.2f);\n'%(fingertip_pos_ui[0], fingertip_pos_ui[1], fingertip_pos_ui[2])
+        ee_euler_code = 'new THREE.Euler(%.2f, %.2f, %.2f);\n'%(ee_euler_ui[0], ee_euler_ui[1], ee_euler_ui[2])
 
         rgb_frame, depth_frame = self.take_rgbd()
         pointcloud = self.rgbd2pointCloud(rgb_frame, depth_frame)
@@ -311,22 +334,22 @@ class InteractiveBot:
         with open('interactive_scripts/interactive_utils/template.html') as f:
             html_content = f.read()
 
-        html_content = html_content%(pointcloud_points_code, pointcloud_colors_code, fingertip_pos_code)
+        html_content = html_content%(pointcloud_points_code, pointcloud_colors_code, fingertip_pos_code, ee_euler_code)
         with open('interactive_scripts/interactive_utils/index.html', 'w') as f:
             f.write(html_content)
 
         server_process = subprocess.Popen([sys.executable, "interactive_scripts/interactive_utils/serve.py"])
 
         # Define a shared array of 3 floats for ee_pos_cmd
-        shared_ee_pos_cmd = multiprocessing.Array('d', [ee_pos[0], ee_pos[1], ee_pos[2]])  # 'd' for double precision float
+        shared_pose = multiprocessing.Array('d', [ee_pos[0], ee_pos[1], ee_pos[2], ee_euler[0], ee_euler[1], ee_euler[2], float(gripper_closed)])  # 'd' for double precision float
         # Function to safely access the latest values of the shared array
 
-        def get_latest_ee_pos_cmd():
-            with shared_ee_pos_cmd.get_lock():  # Synchronize access to the shared array
-                return [v for v in shared_ee_pos_cmd]
+        def get_latest_pose_cmd():
+            with shared_pose.get_lock():  # Synchronize access to the shared array
+                return [v for v in shared_pose]
 
         # Initialize the handler with the shared array
-        handler = MyWebSocketHandler(shared_ee_pos_cmd)
+        handler = MyWebSocketHandler(shared_pose)
         
         # Define the server coroutine
         async def server_coroutine():
@@ -341,22 +364,42 @@ class InteractiveBot:
         loop_thread = threading.Thread(target=start_asyncio_event_loop, daemon=True)
         loop_thread.start()
 
+        angle_offset = ee_euler.copy()[0]
+
         MAX_DELTA = 0.03
         while True:
-            fingertip_pos_ui = get_latest_ee_pos_cmd()
+            pose = get_latest_pose_cmd()
+            closed = pose[-1]
+
+            fingertip_pos_ui = pose[:3]
             ee_pos_cmd = self.transform_uiframe_to_robotframe(np.array(fingertip_pos_ui).reshape(1, 3)).squeeze()
             ee_pos_cmd -= self.calculate_fingertip_offset(ee_euler)
-            if np.linalg.norm(ee_pos_cmd - ee_pos) < 0.3:
+
+            ee_euler_cmd = [pose[3]+angle_offset, -pose[5], pose[4]]
+
+            angle_diff = np.linalg.norm(ee_euler_cmd - ee_euler)
+            pos_diff = np.linalg.norm(ee_pos_cmd - ee_pos)
+            #print(angle_diff)
+
+            if pos_diff < 0.35 and angle_diff < 1.5:
+                #self.move_robot(ee_pos_cmd, ee_euler_cmd, max_delta=MAX_DELTA)
                 self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
             else:
-                print(np.linalg.norm(ee_pos_cmd - ee_pos))
-            #    print('here', ee_pos_cmd, ee_pos)
-            #if ee_pos_cmd[0] < 0.1:
-            #    ee_pos_cmd = ee_pos.copy()
-            #self.translate_robot(ee_pos_cmd, max_delta=0.03)
+                print('Too big a delta', pos_diff, angle_diff)
 
         server_process.wait()
 
+    def test_angles(self):
+        obs = self.env._get_obs()
+        ee_pos = obs['state']['ee_pos']
+        ee_quat = obs['state']['ee_quat']
+        ee_euler = R.from_quat(ee_quat).as_euler("xyz")
+
+        target_ee_pos = ee_pos + [0.1, 0, 0]
+        target_ee_euler = ee_euler.copy() + [-np.pi/6, 0, 0]
+        print(target_ee_euler, ee_euler)
+
+        self.move_robot(target_ee_pos, target_ee_euler)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -374,3 +417,4 @@ if __name__ == '__main__':
     #robot.run_calibration()
     #robot.test_calibration()
     robot.test_ui()
+    #robot.test_angles()
