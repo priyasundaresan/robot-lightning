@@ -108,6 +108,19 @@ class InteractiveBot:
             action = np.hstack((next_ee_pos, ee_euler, gripper_width))
             self.env.step(action)
 
+    def rotate_robot(self, target_euler, num_steps=30):
+        obs = self.env._get_obs()
+        ee_pos = obs['state']['ee_pos']
+        ee_quat = obs['state']['ee_quat']
+        ee_euler = R.from_quat(ee_quat).as_euler("xyz")
+        gripper_width = obs['state']['gripper_pos']
+
+        gen_ori = get_ori(ee_euler, target_euler, num_steps)
+        for i in range(1, num_steps+1):
+            next_ee_euler = gen_ori(i)
+            action = np.hstack((ee_pos, next_ee_euler, gripper_width))
+            self.env.step(action)
+
     def move_robot(self, target_pos, target_euler, max_delta=0.005):
         obs = self.env._get_obs()
         ee_pos = obs['state']['ee_pos']
@@ -119,22 +132,30 @@ class InteractiveBot:
         positional_delta = np.linalg.norm(target_pos - ee_pos)
         rotational_delta = np.linalg.norm(target_euler - ee_euler)
 
-        if positional_delta > 0.01:
-            gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
-            gen_ori = get_ori(ee_euler, target_euler, num_steps)
-            for i in range(1, num_steps+1):
-                next_ee_pos = gen_waypoint(i)
-                next_ee_euler = gen_ori(i)
-                action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
-                self.env.step(action)
-        else:
-            #num_steps = int(rotational_delta * 100)
-            num_steps = 30
-            gen_ori = get_ori(ee_euler, target_euler, num_steps)
-            for i in range(1, num_steps):
-                next_ee_euler = gen_ori(i)
-                action = np.hstack((ee_pos, next_ee_euler, gripper_width))
-                self.env.step(action)
+        gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
+        gen_ori = get_ori(ee_euler, target_euler, num_steps)
+        for i in range(1, num_steps+1):
+            next_ee_pos = gen_waypoint(i)
+            next_ee_euler = gen_ori(i)
+            action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
+            self.env.step(action)
+
+        #if positional_delta > 0.01:
+        #    gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
+        #    gen_ori = get_ori(ee_euler, target_euler, num_steps)
+        #    for i in range(1, num_steps+1):
+        #        next_ee_pos = gen_waypoint(i)
+        #        next_ee_euler = gen_ori(i)
+        #        action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
+        #        self.env.step(action)
+        #else:
+        #    #num_steps = int(rotational_delta * 100)
+        #    num_steps = 30
+        #    gen_ori = get_ori(ee_euler, target_euler, num_steps)
+        #    for i in range(1, num_steps):
+        #        next_ee_euler = gen_ori(i)
+        #        action = np.hstack((ee_pos, next_ee_euler, gripper_width))
+        #        self.env.step(action)
 
     def close_gripper(self):
         obs = self.env._get_obs()
@@ -366,7 +387,7 @@ class InteractiveBot:
 
         angle_offset = ee_euler.copy()[0]
 
-        MAX_DELTA = 0.03
+        MAX_DELTA = 0.04
         while True:
             pose = get_latest_pose_cmd()
             closed = pose[-1]
@@ -379,13 +400,20 @@ class InteractiveBot:
 
             angle_diff = np.linalg.norm(ee_euler_cmd - ee_euler)
             pos_diff = np.linalg.norm(ee_pos_cmd - ee_pos)
-            #print(angle_diff)
 
-            if pos_diff < 0.35 and angle_diff < 1.5:
-                #self.move_robot(ee_pos_cmd, ee_euler_cmd, max_delta=MAX_DELTA)
+            if pos_diff < 0.37:
                 self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
-            else:
-                print('Too big a delta', pos_diff, angle_diff)
+
+            #elif angle_diff < 1.5 and angle_diff > 0.02:
+            #    print('Will rotate')
+            #    self.rotate_robot(ee_euler_cmd)
+            #else:
+            #    print('Do not move')
+
+            #if pos_diff < 0.37 and angle_diff < 1.5:
+            #    self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
+            #else:
+            #    print('Too big a delta', pos_diff, angle_diff)
 
         server_process.wait()
 
