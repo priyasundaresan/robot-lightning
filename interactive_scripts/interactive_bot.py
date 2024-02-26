@@ -341,13 +341,19 @@ class InteractiveBot:
         loop_thread = threading.Thread(target=start_asyncio_event_loop, daemon=True)
         loop_thread.start()
 
+        MAX_DELTA = 0.03
         while True:
             fingertip_pos_ui = get_latest_ee_pos_cmd()
             ee_pos_cmd = self.transform_uiframe_to_robotframe(np.array(fingertip_pos_ui).reshape(1, 3)).squeeze()
             ee_pos_cmd -= self.calculate_fingertip_offset(ee_euler)
-            if ee_pos_cmd[0] < 0.1:
-                ee_pos_cmd = ee_pos.copy()
-            self.translate_robot(ee_pos_cmd, max_delta=0.03)
+            if np.linalg.norm(ee_pos_cmd - ee_pos) < 0.3:
+                self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
+            else:
+                print(np.linalg.norm(ee_pos_cmd - ee_pos))
+            #    print('here', ee_pos_cmd, ee_pos)
+            #if ee_pos_cmd[0] < 0.1:
+            #    ee_pos_cmd = ee_pos.copy()
+            #self.translate_robot(ee_pos_cmd, max_delta=0.03)
 
         server_process.wait()
 
