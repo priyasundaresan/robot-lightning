@@ -51,6 +51,21 @@
     }
     document.addEventListener('mousemove', onMouseMove);
 
+    // Generate random colors for point cloud
+    const positions = %s
+    const colors = %s
+    const pointCloudGeometry = new THREE.BufferGeometry();
+    pointCloudGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    pointCloudGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); // Set colors attribute
+    const pointCloudMaterial = new THREE.PointsMaterial({
+        size: 0.15, // Adjust the size of the points
+        opacity: 0.35,
+        vertexColors: true, // Enable vertex colors
+        transparent: true
+    });
+    const pointCloud = new THREE.Points(pointCloudGeometry, pointCloudMaterial);
+    scene.add(pointCloud);
+
     // Function to load object
     function loadObject(url, position, rotation, index) {
       const loader = new THREE.OBJLoader();
@@ -75,7 +90,11 @@
       );
     }
 
-    loadObject(url, new THREE.Vector3(0, 1, 0), new THREE.Euler(0, 0, 0), -1);
+    //const initialPos = new THREE.Vector3(0, 1, 0);
+    const initialPos = %s;
+    const initialRot = %s;
+    //loadObject(url, initialPos, new THREE.Euler(0, 0, 0), -1);
+    loadObject(url, initialPos, initialRot, -1);
 
     // Event handler for mouse move
     function onMouseMove(event) {
@@ -110,7 +129,7 @@
         } 
         arrowHelper.position.copy(selectedObject.position);
         const point = selectedObject.position.clone();
-        point.add(mv.multiplyScalar(0.005)); // Scale the movement and apply to the point
+        point.add(mv.multiplyScalar(0.003)); // Scale the movement and apply to the point
         selectedObject.position.copy(point); // Scale the movement and apply to the point
     
       }

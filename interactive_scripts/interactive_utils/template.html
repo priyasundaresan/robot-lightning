@@ -13,7 +13,72 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/loaders/OBJLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/controls/TransformControls.js"></script>
+  <button id="startButton">Start Recording</button>
+  <button id="stopButton" style="display:none;">Stop Recording</button>
+  <button id="saveButton" style="display:none;">Save Recording</button>
+  
+  <video id="recordedVideo" controls></video>
+
   <script>
+    let stream;
+    let mediaRecorder;
+    let recordedChunks = [];
+
+    const startButton = document.getElementById('startButton');
+    const stopButton = document.getElementById('stopButton');
+    const saveButton = document.getElementById('saveButton');
+    const recordedVideo = document.getElementById('recordedVideo');
+
+    startButton.addEventListener('click', async () => {
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = event => {
+          recordedChunks.push(event.data);
+        };
+
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(recordedChunks, { type: 'video/webm' });
+          const url = URL.createObjectURL(blob);
+          recordedVideo.src = url;
+          recordedVideo.controls = true;
+
+          saveButton.style.display = 'inline-block';
+        };
+
+        mediaRecorder.start();
+        
+        startButton.style.display = 'none';
+        stopButton.style.display = 'inline-block';
+      } catch (err) {
+        console.error('Error accessing screen capture:', err);
+      }
+    });
+
+    stopButton.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        stream.getTracks().forEach(track => track.stop());
+        
+        startButton.style.display = 'inline-block';
+        stopButton.style.display = 'none';
+      }
+    });
+
+    saveButton.addEventListener('click', () => {
+      const blob = new Blob(recordedChunks, { type: 'video/webm' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = 'recorded-video.webm';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    });
+    
     // Setup scene
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -92,7 +157,9 @@
 
     //const initialPos = new THREE.Vector3(0, 1, 0);
     const initialPos = %s;
-    loadObject(url, initialPos, new THREE.Euler(0, 0, 0), -1);
+    const initialRot = %s;
+    //loadObject(url, initialPos, new THREE.Euler(0, 0, 0), -1);
+    loadObject(url, initialPos, initialRot, -1);
 
     // Event handler for mouse move
     function onMouseMove(event) {
@@ -119,6 +186,11 @@
           mv.x = 0; // Lock movement on X-axis
           mv.y = 0; // Lock movement on Y-axis
           arrowHelper.setDirection(new THREE.Vector3(0, 0, mv.z)); // Set arrow direction along Y-axis
+          arrowHelper.visible = !(mv.x === 0 && mv.y === 0 && mv.z === 0); // Show arrow
+          //arrowHelper.visible = true; // Show arrow
+        } else if (keys['p']) {
+          mv.y = 0; // Lock movement on Y-axis
+          arrowHelper.setDirection(new THREE.Vector3(mv.x, 0, mv.z)); // Set arrow direction along Y-axis
           arrowHelper.visible = !(mv.x === 0 && mv.y === 0 && mv.z === 0); // Show arrow
           //arrowHelper.visible = true; // Show arrow
         } else {
