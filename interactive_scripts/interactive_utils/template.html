@@ -10,15 +10,32 @@
   </style>
 </head>
 <body>
+<style>
+  #keypress-display {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    color: #333;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 10px 15px;
+    border-radius: 10px;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 16px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    opacity: 0;
+    transition: opacity 0.2s ease-in-out;
+  }
+</style>
+<div id="keypress-display" style="position: absolute; top: 20px; left: 300px; color: #333; background: rgba(255, 255, 255, 0.9); padding: 10px 15px; border-radius: 10px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">Key: None</div>
+
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/loaders/OBJLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/controls/TransformControls.js"></script>
   <button id="startButton">Start Recording</button>
   <button id="stopButton" style="display:none;">Stop Recording</button>
   <button id="saveButton" style="display:none;">Save Recording</button>
-  
   <video id="recordedVideo" controls></video>
-
   <script>
     let stream;
     let mediaRecorder;
@@ -78,7 +95,7 @@
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
     });
-    
+
     // Setup scene
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -101,7 +118,8 @@
     let originalControl = null;
     let isTranslationMode = true;
     let isMouseDown = false;
-    let url = 'http://localhost:8080/robotiq_closed.obj';
+    const controlPoints = [];
+    const meshUrls = [];
 
     // Arrow Helper for showing direction
     const arrowRadius = 0.6;
@@ -109,12 +127,32 @@
     arrowHelper.visible = false; // Initially hidden
     scene.add(arrowHelper);
 
-    // Function to add object to scene
-    function addObject(obj) {
-      selectedObject = obj;
-      scene.add(selectedObject);
+    // Cylinder creation and management
+    let guideCylinder = null;
+    
+    function createGuideCylinder() {
+        const geometry = new THREE.CylinderGeometry(0.07, 0.07, 3, 32);
+        const material = new THREE.MeshBasicMaterial({color: 0xADD8E6, transparent: true, opacity: 0.5});
+        guideCylinder = new THREE.Mesh(geometry, material);
+        guideCylinder.visible = false; // Initially invisible
+        scene.add(guideCylinder);
     }
-    document.addEventListener('mousemove', onMouseMove);
+    
+    // Call this function after scene initialization
+    createGuideCylinder();
+    
+    // Function to update the cylinder's visibility, position, and orientation
+    function updateGuideCylinder(visible, axis) {
+        if (selectedObject && guideCylinder) {
+            guideCylinder.visible = visible;
+            if (visible) {
+                guideCylinder.position.copy(selectedObject.position);
+                guideCylinder.rotation.copy(selectedObject.rotation);
+            }
+        } else if (guideCylinder) {
+            guideCylinder.visible = false;
+        }
+    }
 
     // Generate random colors for point cloud
     const positions = %s
@@ -131,6 +169,40 @@
     const pointCloud = new THREE.Points(pointCloudGeometry, pointCloudMaterial);
     scene.add(pointCloud);
 
+    // Function to add object to scene
+    function addObject(obj, index, url) {
+      selectedObject = obj;
+      scene.add(selectedObject);
+      if (index == -1) {
+        controlPoints.push(selectedObject);
+        meshUrls.push(url);
+      } else {
+        controlPoints[index] = selectedObject;
+        meshUrls[index] = url;
+      }
+    }
+    document.addEventListener('mousemove', onMouseMove);
+
+    function updateCurvePath() {
+      // Ensure there are enough points to create a curve
+      if (controlPoints.length >= 2) {
+        // Create or update the curve based on current control points' positions
+        curve = new THREE.CatmullRomCurve3(controlPoints.map(point => point.position));
+        const points = curve.getPoints(50); // Adjust the number of points as needed
+    
+        // If path exists, update its geometry. Otherwise, create a new path.
+        if (path) {
+          path.geometry.dispose(); // Dispose of old geometry
+          path.geometry = new THREE.BufferGeometry().setFromPoints(points);
+        } else {
+          const pathGeometry = new THREE.BufferGeometry().setFromPoints(points);
+          const pathMaterial = new THREE.LineBasicMaterial({ color: 0xffa500 }); // Orange color
+          path = new THREE.Line(pathGeometry, pathMaterial);
+          scene.add(path);
+        }
+      }
+    }
+
     // Function to load object
     function loadObject(url, position, rotation, index) {
       const loader = new THREE.OBJLoader();
@@ -144,7 +216,7 @@
               child.geometry.computeBoundingBox();
               child.position.copy(position); // Set object position
               child.quaternion.setFromEuler(rotation);
-              addObject(child.clone(), index);
+              addObject(child.clone(), index, url);
             }
           });
         },
@@ -155,59 +227,92 @@
       );
     }
 
-    //const initialPos = new THREE.Vector3(0, 1, 0);
+    let url = 'http://localhost:8080/robotiq_closed.obj';
     const initialPos = %s;
     const initialRot = %s;
-    //loadObject(url, initialPos, new THREE.Euler(0, 0, 0), -1);
     loadObject(url, initialPos, initialRot, -1);
+
+    // Create path curve
+    let curve;
+    let points;
+    let path;
+    setTimeout(() => {
+      curve = new THREE.CatmullRomCurve3(controlPoints.map(point => point.position));
+      points = curve.getPoints(50);
+      const pathGeometry = new THREE.BufferGeometry().setFromPoints(points);
+      const pathMaterial = new THREE.LineBasicMaterial({ color: 0xffa500 }); // Orange color
+      path = new THREE.Line(pathGeometry, pathMaterial);
+      scene.add(path);
+    }, 1000); // Wait for objects to load
+
+
+    // Event handler for pinch gesture on trackpad
+    function onPinch(event) {
+      event.preventDefault();
+      // Adjust camera zoom based on the deltaY property of the event
+      camera.position.z += event.deltaY * 0.01;
+    }
+    
+    // Event listener for wheel event
+    document.addEventListener('wheel', function(event) {
+      // Check if the ctrl key is pressed (indicating a pinch gesture on some trackpads)
+      if (event.ctrlKey) {
+        onPinch(event);
+      }
+    });
+
 
     // Event handler for mouse move
     function onMouseMove(event) {
       event.preventDefault();
+      if (transformControl != null) {
+        updateGuideCylinder(true, event.key);
+      }
       if (isMouseDown && selectedObject && isTranslationMode) {
         const movementX = event.movementX;
         const movementY = event.movementY;
+        const index = controlPoints.indexOf(selectedObject);
+        const point = controlPoints[index].position;
     
-        // Adjust the movement vector based on keys pressed
-        const mv = new THREE.Vector3(movementX, -movementY, 0.5*(movementX+movementY));
+        let mv = new THREE.Vector3(movementX, -movementY, 0.5 * (movementX + movementY));
+    
+        // Check for key presses for 'x', 'y', 'z', 'p'
         if (keys['x']) {
           mv.y = 0; // Lock movement on Y-axis
           mv.z = 0; // Lock movement on Z-axis
           arrowHelper.setDirection(new THREE.Vector3(mv.x, 0, 0)); // Set arrow direction along X-axis
           arrowHelper.visible = !(mv.x === 0 && mv.y === 0 && mv.z === 0); // Show arrow
-          //arrowHelper.visible = true; // Show arrow
         } else if (keys['z']) {
           mv.x = 0; // Lock movement on X-axis
           mv.z = 0; // Lock movement on Z-axis
           arrowHelper.setDirection(new THREE.Vector3(0, mv.y, 0)); // Set arrow direction along Z-axis
           arrowHelper.visible = !(mv.x === 0 && mv.y === 0 && mv.z === 0); // Show arrow
-          //arrowHelper.visible = true; // Show arrow
+        } else if (keys['p']) {
+          mv.y = 0; // Lock movement on Y-axis
+          arrowHelper.setDirection(new THREE.Vector3(mv.x, 0, mv.z)); // Set arrow direction along Y-axis
+          arrowHelper.visible = !(mv.x === 0 && mv.y === 0 && mv.z === 0); // Show arrow
         } else if (keys['y']) {
           mv.x = 0; // Lock movement on X-axis
           mv.y = 0; // Lock movement on Y-axis
           arrowHelper.setDirection(new THREE.Vector3(0, 0, mv.z)); // Set arrow direction along Y-axis
           arrowHelper.visible = !(mv.x === 0 && mv.y === 0 && mv.z === 0); // Show arrow
-          //arrowHelper.visible = true; // Show arrow
-        } else if (keys['p']) {
-          mv.y = 0; // Lock movement on Y-axis
-          arrowHelper.setDirection(new THREE.Vector3(mv.x, 0, mv.z)); // Set arrow direction along Y-axis
-          arrowHelper.visible = !(mv.x === 0 && mv.y === 0 && mv.z === 0); // Show arrow
-          //arrowHelper.visible = true; // Show arrow
         } else {
           arrowHelper.setDirection(new THREE.Vector3(0, 0, 0)); // Set arrow direction along Y-axis
-          arrowHelper.visible = false; // Show arrow
-        } 
-        arrowHelper.position.copy(selectedObject.position);
-        const point = selectedObject.position.clone();
-        point.add(mv.multiplyScalar(0.003)); // Scale the movement and apply to the point
-        selectedObject.position.copy(point); // Scale the movement and apply to the point
-    
+          arrowHelper.visible = false; // Hide arrow
+        }
+        arrowHelper.position.copy(point);
+        // Apply the movement vector
+        point.add(mv.multiplyScalar(0.003));
+        updateCurvePath();
       }
     }
+
+
 
     // Event listener for mouse down
     document.addEventListener('mousedown', function(event) {
       isMouseDown = true;
+      selectObject(event);
     });
 
     // Event listener for mouse up
@@ -221,6 +326,32 @@
       y: false,
       z: false
     };
+    
+    function moveSelectedObjectToPos(intersectedPoint) {
+    if (selectedObject) {
+        // Here, intersectedPoint is the position where the ray intersects the point cloud
+        selectedObject.position.copy(intersectedPoint);
+        console.log('Selected object moved to:', intersectedPoint);
+      }
+    }
+
+    // Function to select object
+    function selectObject(event) {
+      const mouse = new THREE.Vector2();
+      const raycaster = new THREE.Raycaster();
+      mouse.x = (event.clientX / renderer.domElement.clientWidth) * 2 - 1;
+      mouse.y = -(event.clientY / renderer.domElement.clientHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const intersectsPoints = raycaster.intersectObjects(controlPoints);
+
+      if (intersectsPoints.length > 0) {
+        const intersectedObject = intersectsPoints[0].object;
+        if (selectedObject !== intersectedObject) {
+          selectedObject = intersectedObject;
+          return;
+        }
+      }
+    }
 
 
     // Event listener for key up
@@ -241,6 +372,9 @@
           // Get position and orientation of the selectedObject
           const position = selectedObject.position;
           const orientation = selectedObject.rotation;
+          const index = controlPoints.indexOf(selectedObject);
+          const url = meshUrls[index];
+          console.log(url)
 
           // Create data object
           const data = {
@@ -279,9 +413,46 @@
     });
 
 
+    // Adjust existing key up event listener
+    document.addEventListener('keyup', function(event) {
+        keys[event.key.toLowerCase()] = false;
+        // Hide the cylinder when key is released
+        updateGuideCylinder(false);
+        // Existing functionality...
+    });
+
     // Event listener for key down
     document.addEventListener('keydown', function(event) {
+      if (event.key === '0' && selectedObject) {
+          const birdsEyeViewPosition = new THREE.Vector3(0, 15, 0); // Adjust the Y value as needed to set the height
+          camera.position.copy(birdsEyeViewPosition);
+          camera.lookAt(new THREE.Vector3(0, 0, 0)); 
+          camera.up.set(0, 0, -1); 
+          event.preventDefault(); 
+      } else if (event.key === '1' && selectedObject) {
+          const birdsEyeViewPosition = new THREE.Vector3(selectedObject.position.x, selectedObject.position.y + 10, selectedObject.position.z + 10); // Adjust the Y value as needed to set the height
+          camera.position.copy(birdsEyeViewPosition);
+          camera.lookAt(selectedObject.position); 
+          camera.up.set(0, 0, -1); 
+          event.preventDefault(); 
+      } 
       keys[event.key.toLowerCase()] = true;
+      const displayElement = document.getElementById('keypress-display');
+        if (displayElement) {
+            if (event.key === 'r') {
+                displayElement.innerText = `[Rotation] Key: ${event.key}`;
+            } else if (event.key === 'g') {
+                displayElement.innerText = `[Toggle Gripper] Key: ${event.key}`;
+            } else if (event.key === 'p') {
+                displayElement.innerText = `[Translation]: Planar`;
+            } else {
+                displayElement.innerText = `[Translation] Key: ${event.key}`;
+            }
+            displayElement.style.opacity = 1; 
+        }
+      if ((event.key === 'x' || event.key === 'y' || event.key === 'z' || event.key === 'p') && selectedObject) {
+        updateGuideCylinder(true, event.key);
+      }
       if (event.key === 'r') {
         event.preventDefault();
         if (selectedObject && isTranslationMode) {
@@ -298,8 +469,34 @@
           transformControl.addEventListener('change', function() {
               selectedObject.rotation.copy(selectedObject.rotation);
           });
-        }
-      } else if (event.key === 'Escape') {
+        } 
+      } else if (event.key === 'd') {
+          event.preventDefault(); 
+          if (selectedObject) {
+            const clone = selectedObject.clone();
+            const oldIndex = controlPoints.indexOf(selectedObject);
+
+            const url = meshUrls[oldIndex];
+
+            let pos = new THREE.Vector3(0, -0.5, 0);
+            pos.applyQuaternion(selectedObject.quaternion);
+            //console.log(pos);
+            clone.position.x += pos.x; // Move the clone 0.05 units to the right
+            clone.position.y += pos.y; // Move the clone 0.05 units to the right
+            clone.position.z += pos.z; // Move the clone 0.05 units to the right
+
+            //clone.position.x += 0.65; // Move the clone 0.05 units to the right
+            // Add the clone to the scene and controlPoints array
+            scene.add(clone);
+            controlPoints.push(clone);
+            meshUrls.push(url);
+            // Update the path if necessary
+            updateCurvePath();
+
+            // Optionally, make the clone the new selected object
+            selectedObject = clone;
+          }
+        } else if (event.key === 'Escape') {
         event.preventDefault();
         if (transformControl) {
           isTranslationMode = true;
@@ -311,9 +508,10 @@
           document.addEventListener('mousemove', onMouseMove);
         }
       } else if (event.key === 'g') {
-        console.log("in g");
         event.preventDefault();
         if (selectedObject) {
+          const oldIndex = controlPoints.indexOf(selectedObject);
+          const url = meshUrls[oldIndex];
           let newUrl = '';
           // Store position and rotation of selectedObject
           const position = selectedObject.position.clone();
@@ -327,43 +525,41 @@
             newUrl = 'http://localhost:8080/robotiq_closed.obj';
           }
           scene.remove(selectedObject);
-          loadObject(newUrl, position, rotation, -1);
-          url = newUrl;
+          console.log(oldIndex);
+          loadObject(newUrl, position, rotation, oldIndex);
+          updateCurvePath();
         }
       } else if (keys['f'] || keys['b']) {
-        // Determine the direction
         const direction = keys['f'] ? -2 : 2;
-        // Calculate the movement speed based on key press duration
         const movementSpeed = direction * Math.min((performance.now() - keyPressStartTime) * 0.0002, 0.03);
-        // Move relative to selectedObject's rotation
-        const point = selectedObject.position;
+        const index = controlPoints.indexOf(selectedObject);
+        const point = controlPoints[index].position;
         const movementVector = new THREE.Vector3(0, movementSpeed, 0);
         movementVector.applyQuaternion(selectedObject.quaternion);
         point.add(movementVector);
-        selectedObject.position.copy(point);
+        updateCurvePath();
       }
     });
 
-    // Variable to track key press start time
     let keyPressStartTime = 0;
 
-    // Event listener for key down
     document.addEventListener('keydown', function(event) {
       keys[event.key.toLowerCase()] = true;
       // Record the start time of key press
       keyPressStartTime = performance.now();
     });
 
-    // Event listener for key up
     document.addEventListener('keyup', function(event) {
+      const displayElement = document.getElementById('keypress-display');
+        if (displayElement) {
+            displayElement.style.opacity = 0; // Fade out
+        }
       keys[event.key.toLowerCase()] = false;
       arrowHelper.visible = false; // Hide arrow when key is released
     });
 
-    // Event handler for mouse wheel (trackpad) rotation
     function onWheel(event) {
       event.preventDefault();
-      // Adjust camera rotation based on wheel movement along the X and Z axes
       const movementX = event.deltaX * 0.0006;
       const movementZ = event.deltaY * 0.0006;
       const newPosition = new THREE.Vector3().copy(camera.position);
@@ -373,10 +569,8 @@
       camera.lookAt(initialCameraLookAt); // Maintain lookAt position
     }    
 
-    // Event listener for wheel event
     document.addEventListener('wheel', onWheel, { passive: false });
 
-    // Render loop
     function animate() {
       requestAnimationFrame(animate);
       renderer.render(scene, camera);
