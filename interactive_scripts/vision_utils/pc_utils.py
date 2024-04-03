@@ -9,24 +9,44 @@ import scipy.spatial as spatial
 
 def visualize_pointcloud(pointcloud):
     o3d.visualization.draw_geometries([pointcloud])
-
-def deproject(depth_image, K, tf = np.eye(4), base_units=-3):
-    depth_image = depth_image*(10**base_units) # convert mm to m (TODO)
-
-    h,w = depth_image.shape
-    row_indices = np.arange(h)
-    col_indices = np.arange(w)
-    pixel_grid = np.meshgrid(col_indices, row_indices)
-    pixels = np.c_[pixel_grid[0].flatten(), pixel_grid[1].flatten()].T
-
-    pixels_homog = np.r_[pixels, np.ones([1, pixels.shape[1]])]
-    depth_arr = np.tile(depth_image.flatten(), [3, 1])
-    points_3d = depth_arr * np.linalg.inv(K).dot(pixels_homog)
-
-    points_3d_transf = np.vstack((points_3d, np.ones([1,points_3d.shape[1]])))
-    points_3d_transf = ((tf.dot(points_3d_transf)).T)[:, 0:3]
-
+    
+def deproject(depth_image, K, tf=np.eye(4), base_units=-3):
+    # Convert depth image to meters
+    depth_image_m = depth_image * (10 ** base_units)
+    
+    h, w = depth_image.shape
+    i, j = np.indices((h, w))
+    
+    # Create homogeneous coordinates for pixels
+    pixels_homog = np.stack([j.ravel(), i.ravel(), np.ones_like(i).ravel()], axis=0)
+    
+    # Compute the 3D points in the camera frame
+    depth_arr = depth_image_m.ravel()
+    points_3d = np.linalg.inv(K) @ pixels_homog * depth_arr
+    
+    # Transform the points to the target frame
+    points_3d_homog = np.vstack([points_3d, np.ones(points_3d.shape[1])])
+    points_3d_transf = (tf @ points_3d_homog).T[:, :3]
+    
     return points_3d_transf
+
+#def deproject(depth_image, K, tf = np.eye(4), base_units=-3):
+#    depth_image = depth_image*(10**base_units) # convert mm to m (TODO)
+#
+#    h,w = depth_image.shape
+#    row_indices = np.arange(h)
+#    col_indices = np.arange(w)
+#    pixel_grid = np.meshgrid(col_indices, row_indices)
+#    pixels = np.c_[pixel_grid[0].flatten(), pixel_grid[1].flatten()].T
+#
+#    pixels_homog = np.r_[pixels, np.ones([1, pixels.shape[1]])]
+#    depth_arr = np.tile(depth_image.flatten(), [3, 1])
+#    points_3d = depth_arr * np.linalg.inv(K).dot(pixels_homog)
+#
+#    points_3d_transf = np.vstack((points_3d, np.ones([1,points_3d.shape[1]])))
+#    points_3d_transf = ((tf.dot(points_3d_transf)).T)[:, 0:3]
+#
+#    return points_3d_transf
 
 def deproject_pixels(pixels, depth_image, K, tf = np.eye(4), base_units=-3):
     h,w = depth_image.shape
@@ -55,13 +75,18 @@ def transform_points(tf, points_3d):
     #print(points_3d_transf.shape)
     return points_3d_transf
 
-def crop(pcd, min_bound=[0.0,-0.35,-0.05], max_bound=[0.9, 0.4, 1.0]):
-    idxs = np.logical_and(np.logical_and(
-                  np.logical_and(pcd[:,0] > min_bound[0], pcd[:,0] < max_bound[0]),
-                  np.logical_and(pcd[:,1] > min_bound[1], pcd[:,1] < max_bound[1])),
-                  np.logical_and(pcd[:,2] > min_bound[2], pcd[:,2] < max_bound[2]))
-
+def crop(pcd, min_bound=[0.0, -0.35, -0.05], max_bound=[0.9, 0.4, 1.0]):
+    # Use a single logical operation to compute the indices within the bounding box
+    idxs = np.all((pcd > min_bound) & (pcd < max_bound), axis=1)
     return idxs
+
+#def crop(pcd, min_bound=[0.0,-0.35,-0.05], max_bound=[0.9, 0.4, 1.0]):
+#    idxs = np.logical_and(np.logical_and(
+#                  np.logical_and(pcd[:,0] > min_bound[0], pcd[:,0] < max_bound[0]),
+#                  np.logical_and(pcd[:,1] > min_bound[1], pcd[:,1] < max_bound[1])),
+#                  np.logical_and(pcd[:,2] > min_bound[2], pcd[:,2] < max_bound[2]))
+#
+#    return idxs
 
 def draw_registration_result(source, target, transformation):
     source_temp = copy.deepcopy(source)

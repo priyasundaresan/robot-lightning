@@ -16,8 +16,9 @@ def get_waypoint(start_pt, target_pt, max_delta=0.005):
 
 # rotation interpolation
 def get_ori(initial_euler, final_euler, num_steps):
+    diff = np.linalg.norm(final_euler - initial_euler)
     ori_chg = R.from_euler("xyz", [initial_euler.copy(), final_euler.copy()], degrees=False)
-    if sum(np.round(initial_euler, 2) - np.round(final_euler, 2)) == 0:
+    if diff < 0.02 or num_steps < 2:
         def gen_ori(i):
             return initial_euler
     else:

@@ -1,4 +1,5 @@
 import pyrealsense2 as rs
+from scipy.spatial.transform import Rotation
 import threading
 import yaml
 import os
@@ -60,27 +61,26 @@ class InteractiveBot:
     def __init__(self, config):
         self.env = robots.RobotEnv(**config)
         obs, _ = self.env.reset(reset_controller=True)
-        self.transforms = None
-        if os.path.exists('calib/transforms.npy'):
-            self.transforms = np.load('calib/transforms.npy', allow_pickle=True).item()
 
         self.command_queue = Queue()
 
     def take_rgbd(self):
         frames = self.env._get_frames()
-        rgb_frame = frames['agent_image']
-        depth_frame = frames['agent_depth']
+        rgb_frame = frames['wrist_image']
+        depth_frame = frames['wrist_depth']
         return rgb_frame, depth_frame
 
     def rgbd2pointCloud(self, rgb_frame, depth_frame):
         depth_frame = depth_frame.squeeze()
-        agent_intrinsics = self.env.cameras['agent'].get_intrinsics()['matrix']
+        wrist_intrinsics = self.env.cameras['wrist'].get_intrinsics()['matrix']
         denoised_idxs = denoise(depth_frame)
-        if self.transforms is not None:
-            tf = self.transforms['agent']['tcr']
-        else:
-            tf = np.eye(4)
-        points_3d = deproject(depth_frame, agent_intrinsics, tf)
+        tf = np.eye(4)
+        rotation = Rotation.from_euler('xzy', [180, -90, 3], degrees=True)
+        rotation_matrix = rotation.as_matrix()
+        tf[:3, :3] = rotation_matrix
+        tf[:,3] = [0.37, 0.03, 0.51, 1]
+        
+        points_3d = deproject(depth_frame, wrist_intrinsics, tf)
         colors = rgb_frame.reshape(points_3d.shape)/255.
 
         points_3d = points_3d[denoised_idxs]
@@ -94,18 +94,6 @@ class InteractiveBot:
         pcd_merged.remove_duplicated_points()
         return pcd_merged
 
-    def translate_robot(self, target_pos, max_delta=0.005):
-        obs = self.env._get_obs()
-        ee_pos = obs['state']['ee_pos']
-        ee_quat = obs['state']['ee_quat']
-        ee_euler = R.from_quat(ee_quat).as_euler("xyz")
-        gripper_width = obs['state']['gripper_pos']
-
-        gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
-        for i in range(1, num_steps+1):
-            next_ee_pos = gen_waypoint(i)
-            action = np.hstack((next_ee_pos, ee_euler, gripper_width))
-            self.env.step(action)
 
     def rotate_robot(self, target_euler, num_steps=15):
         obs = self.env._get_obs()
@@ -118,6 +106,19 @@ class InteractiveBot:
         for i in range(1, num_steps+1):
             next_ee_euler = gen_ori(i)
             action = np.hstack((ee_pos, next_ee_euler, gripper_width))
+            self.env.step(action)
+
+    def move_robot_constant(self, target_pos, target_euler, max_delta=0.005):
+        obs = self.env._get_obs()
+        ee_pos = obs['state']['ee_pos']
+        gripper_width = obs['state']['gripper_pos']
+
+        positional_delta = np.linalg.norm(target_pos - ee_pos)
+
+        gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
+        for i in range(1, num_steps+1):
+            next_ee_pos = gen_waypoint(i)
+            action = np.hstack((next_ee_pos, target_euler, gripper_width))
             self.env.step(action)
 
     def move_robot(self, target_pos, target_euler, max_delta=0.005):
@@ -244,7 +245,7 @@ class InteractiveBot:
         input('Ready to close gripper?')
         self.close_gripper()
 
-        agent_intrinsics = self.env.cameras['agent'].get_intrinsics()['matrix']
+        wrist_intrinsics = self.env.cameras['wrist'].get_intrinsics()['matrix']
 
         waypoints_cam = []
         waypoints_rob = []
@@ -257,7 +258,7 @@ class InteractiveBot:
             self.move_robot(waypoint, ee_euler)
             rgb_frame, depth_frame = self.take_rgbd()
             vis, (u,v) = detect_calibration_marker(rgb_frame)
-            cam_point = deproject_pixels(np.array([[u,v]]), depth_frame.squeeze(), agent_intrinsics)[0]
+            cam_point = deproject_pixels(np.array([[u,v]]), depth_frame.squeeze(), wrist_intrinsics)[0]
             waypoints_cam.append(cam_point)
             #waypoints_rob.append(waypoint)
             waypoint_fingertip = waypoint + self.calculate_fingertip_offset(ee_euler.copy())
@@ -267,7 +268,7 @@ class InteractiveBot:
             cv2.imwrite('calib/%05d.jpg'%idx, vis)
 
         trc, tcr = solver.solve_transforms(np.array(waypoints_rob), np.array(waypoints_cam))
-        transforms['agent'] = {'trc':trc, 'tcr':tcr}
+        transforms['wrist'] = {'trc':trc, 'tcr':tcr}
 
         np.save('calib/transforms.npy', transforms)
 
@@ -410,24 +411,16 @@ class InteractiveBot:
                     self.open_gripper()
             gripper_state = closed
 
-            if pos_diff < 0.1 and pos_diff > 0.01:
-                self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
-            elif angle_diff < np.pi/2 and angle_diff > 0.01:
-                print('Will rotate')
-                self.rotate_robot(ee_euler_cmd)
+            target_euler = np.array([np.pi, 0, 0])
+            if (pos_diff < 0.1 and pos_diff > 0.01) or (angle_diff < np.pi/4):
+                self.move_robot_constant(ee_pos_cmd, ee_euler_cmd, max_delta=MAX_DELTA)
             else:
-                #print('Do not move', angle_diff, pos_diff)
-                print('Do not move', ee_euler_cmd, ee_euler)
+                print('Do not move')
 
             obs = self.env._get_obs()
             ee_pos = obs['state']['ee_pos']
             ee_quat = obs['state']['ee_quat']
             ee_euler = R.from_quat(ee_quat).as_euler("xyz")
-
-            #if pos_diff < 0.37 and angle_diff < 1.5:
-            #    self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
-            #else:
-            #    print('Too big a delta', pos_diff, angle_diff)
 
         server_process.wait()
 

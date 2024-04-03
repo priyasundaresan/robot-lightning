@@ -1,4 +1,6 @@
 import pyrealsense2 as rs
+
+from scipy.spatial.transform import Rotation
 import threading
 import yaml
 import os
@@ -24,7 +26,8 @@ import subprocess
 import sys
 import time
 
-from queue import Queue
+import queue
+import msgpack
 
 def adjust_rotation(angle1, angle2):
     if np.sign(angle1) != np.sign(angle2):
@@ -32,29 +35,54 @@ def adjust_rotation(angle1, angle2):
     return angle1
 
 class MyWebSocketHandler:
-    def __init__(self, shared_pose):
+    def __init__(self, shared_pose, pcl_queue):
         self.shared_pose = shared_pose
+        self.pcl_queue = pcl_queue
+        self.websocket = None
 
     async def websocket_handler(self, websocket, path):
-        async for message in websocket:
-            data = ast.literal_eval(message)
-            # The rest of your message handling logic...
-            orientation = data['orientation']
-            # Update shared array with ee_pos_cmd
-            with self.shared_pose.get_lock():
-                data['gripper_open'] = data.get('url') == 'http://localhost:8080/robotiq.obj'
-                if 'url' in data: del data['url']
-
-                fingertip_ui_pos = np.array([data['position']['x'], data['position']['y'], data['position']['z']]).squeeze()
-                rotation = np.array([data['orientation']['x'], data['orientation']['y'], data['orientation']['z']])
-
-                self.shared_pose[0] = fingertip_ui_pos[0]
-                self.shared_pose[1] = fingertip_ui_pos[1]
-                self.shared_pose[2] = fingertip_ui_pos[2]
-                self.shared_pose[3] = rotation[0]
-                self.shared_pose[4] = rotation[1]
-                self.shared_pose[5] = rotation[2]
-                self.shared_pose[6] = not data['gripper_open']
+        self.websocket = websocket  # Store the active WebSocket
+        try:
+            async for message in websocket:
+                data = ast.literal_eval(message)
+                # The rest of your message handling logic...
+                orientation = data['orientation']
+                # Update shared array with ee_pos_cmd
+                with self.shared_pose.get_lock():
+                    data['gripper_open'] = data.get('url') == 'http://localhost:8080/robotiq.obj'
+                    if 'url' in data: del data['url']
+        
+                    fingertip_ui_pos = np.array([data['position']['x'], data['position']['y'], data['position']['z']]).squeeze()
+                    rotation = np.array([data['orientation']['x'], data['orientation']['y'], data['orientation']['z']])
+        
+                    self.shared_pose[0] = fingertip_ui_pos[0]
+                    self.shared_pose[1] = fingertip_ui_pos[1]
+                    self.shared_pose[2] = fingertip_ui_pos[2]
+                    self.shared_pose[3] = rotation[0]
+                    self.shared_pose[4] = rotation[1]
+                    self.shared_pose[5] = rotation[2]
+                    self.shared_pose[6] = not data['gripper_open']
+        finally:
+            self.websocket = None
+            
+    async def send_data_from_queue(self):
+        while True:
+            try:
+                points, colors = self.pcl_queue.get_nowait()
+                if self.websocket:
+                    await self.send_spheres_data(points, colors)
+            except queue.Empty:
+                await asyncio.sleep(0.01)  # Adjust as needed
+                
+    async def send_spheres_data(self, positions, colors):
+        if self.websocket:
+            data = {
+                'positions': positions,
+                'colors': colors
+            }
+            serialized_data = msgpack.packb(data)
+            await self.websocket.send(serialized_data)
+            #await self.websocket.send(json.dumps(data))
 
 class InteractiveBot:
     def __init__(self, config):
@@ -63,8 +91,9 @@ class InteractiveBot:
         self.transforms = None
         if os.path.exists('calib/transforms.npy'):
             self.transforms = np.load('calib/transforms.npy', allow_pickle=True).item()
-
-        self.command_queue = Queue()
+            self.transforms['agent']['tcr'][:,3][2] -= 0.02
+        #self.pcl_queue = queue.Queue()
+        self.pcl_queue = queue.LifoQueue(maxsize=50)
 
     def take_rgbd(self):
         frames = self.env._get_frames()
@@ -75,37 +104,22 @@ class InteractiveBot:
     def rgbd2pointCloud(self, rgb_frame, depth_frame):
         depth_frame = depth_frame.squeeze()
         agent_intrinsics = self.env.cameras['agent'].get_intrinsics()['matrix']
-        denoised_idxs = denoise(depth_frame)
         if self.transforms is not None:
             tf = self.transforms['agent']['tcr']
         else:
             tf = np.eye(4)
+        
         points_3d = deproject(depth_frame, agent_intrinsics, tf)
         colors = rgb_frame.reshape(points_3d.shape)/255.
 
-        points_3d = points_3d[denoised_idxs]
-        colors = colors[denoised_idxs]
+        #denoised_idxs = denoise(depth_frame)
+        #points_3d = points_3d[denoised_idxs]
+        #colors = colors[denoised_idxs]
 
-        idxs = crop(points_3d)
+        idxs = crop(points_3d, min_bound=[0.35, -0.24, 0.0], max_bound=[0.76, 0.24, 0.3])
         points_3d = points_3d[idxs]
         colors = colors[idxs]
-
-        pcd_merged = merge_pcls([points_3d], [colors])
-        pcd_merged.remove_duplicated_points()
-        return pcd_merged
-
-    def translate_robot(self, target_pos, max_delta=0.005):
-        obs = self.env._get_obs()
-        ee_pos = obs['state']['ee_pos']
-        ee_quat = obs['state']['ee_quat']
-        ee_euler = R.from_quat(ee_quat).as_euler("xyz")
-        gripper_width = obs['state']['gripper_pos']
-
-        gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
-        for i in range(1, num_steps+1):
-            next_ee_pos = gen_waypoint(i)
-            action = np.hstack((next_ee_pos, ee_euler, gripper_width))
-            self.env.step(action)
+        return points_3d, colors
 
     def rotate_robot(self, target_euler, num_steps=15):
         obs = self.env._get_obs()
@@ -120,13 +134,42 @@ class InteractiveBot:
             action = np.hstack((ee_pos, next_ee_euler, gripper_width))
             self.env.step(action)
 
-    def move_robot(self, target_pos, target_euler, max_delta=0.005):
+    def move_robot_constant(self, target_pos, target_euler, max_delta=0.005):
+        obs = self.env._get_obs()
+        ee_pos = obs['state']['ee_pos']
+        gripper_width = obs['state']['gripper_pos']
+
+        positional_delta = np.linalg.norm(target_pos - ee_pos)
+
+        gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
+        for i in range(1, num_steps+1):
+            next_ee_pos = gen_waypoint(i)
+            action = np.hstack((next_ee_pos, target_euler, gripper_width))
+            self.env.step(action)
+
+    #def move_robot_constant(self, target_pos, target_euler, max_delta=0.005):
+    #    obs = self.env._get_obs()
+    #    ee_pos = obs['state']['ee_pos']
+    #    ee_quat = obs['state']['ee_quat']
+    #    ee_euler = R.from_quat(ee_quat).as_euler("xyz")
+    #    gripper_width = obs['state']['gripper_pos']
+
+    #    delta = np.clip(np.linalg.norm(target_euler - ee_euler)*0.03, 0, 1)
+    #    next_ee_euler = (1-delta)*np.array(target_euler) - delta*ee_euler
+
+    #    gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
+    #    for i in range(1, num_steps+1):
+    #        next_ee_pos = gen_waypoint(i)
+    #        action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
+    #        #action = np.hstack((next_ee_pos, target_euler, gripper_width))
+    #        self.env.step(action)
+
+    def move_robot(self, target_pos, target_euler, max_delta=0.015):
         obs = self.env._get_obs()
         ee_pos = obs['state']['ee_pos']
         ee_quat = obs['state']['ee_quat']
         ee_euler = R.from_quat(ee_quat).as_euler("xyz")
         gripper_width = obs['state']['gripper_pos']
-    
 
         positional_delta = np.linalg.norm(target_pos - ee_pos)
         rotational_delta = np.linalg.norm(target_euler - ee_euler)
@@ -138,23 +181,6 @@ class InteractiveBot:
             next_ee_euler = gen_ori(i)
             action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
             self.env.step(action)
-
-        #if positional_delta > 0.01:
-        #    gen_waypoint, num_steps = get_waypoint(ee_pos, target_pos, max_delta=max_delta)
-        #    gen_ori = get_ori(ee_euler, target_euler, num_steps)
-        #    for i in range(1, num_steps+1):
-        #        next_ee_pos = gen_waypoint(i)
-        #        next_ee_euler = gen_ori(i)
-        #        action = np.hstack((next_ee_pos, next_ee_euler, gripper_width))
-        #        self.env.step(action)
-        #else:
-        #    #num_steps = int(rotational_delta * 100)
-        #    num_steps = 30
-        #    gen_ori = get_ori(ee_euler, target_euler, num_steps)
-        #    for i in range(1, num_steps):
-        #        next_ee_euler = gen_ori(i)
-        #        action = np.hstack((ee_pos, next_ee_euler, gripper_width))
-        #        self.env.step(action)
 
     def close_gripper(self):
         obs = self.env._get_obs()
@@ -205,7 +231,9 @@ class InteractiveBot:
 
             self.move_robot(target_ee_pos, target_ee_euler)
             rgb_frame, depth_frame = self.take_rgbd()
-            pointcloud = self.rgbd2pointCloud(rgb_frame, depth_frame)
+            points_3d, colors = self.rgbd2pointCloud(rgb_frame, depth_frame)
+            pcd_merged = merge_pcls([points_3d], [colors])
+            pcd_merged.remove_duplicated_points()
 
             # Create a sphere
             radius = 0.02
@@ -271,59 +299,48 @@ class InteractiveBot:
 
         np.save('calib/transforms.npy', transforms)
 
-    def transform_robotframe_to_uiframe(self, waypoints):
-        waypoints = np.array(waypoints)
-        waypoints_ui = np.zeros_like(np.array(waypoints))
-        transf = R.from_euler('x', -90, degrees=True)
-        waypoints_ui = transf.apply(waypoints)
-        rescale_amt = 10
-        waypoints_ui *= rescale_amt
-        return waypoints_ui
+    #def transform_robotframe_to_uiframe(self, waypoints):
+    #    waypoints = np.array(waypoints)
+    #    waypoints_ui = np.zeros_like(np.array(waypoints))
+    #    transf = R.from_euler('x', -90, degrees=True)
+    #    waypoints_ui = transf.apply(waypoints)
+    #    rescale_amt = 10
+    #    waypoints_ui *= rescale_amt
+    #    return waypoints_ui
 
+    #def transform_uiframe_to_robotframe(self, waypoints):
+    #    waypoints_rob = np.array(waypoints.copy())
+    #    waypoints_rob /= 10
+    #    transf = R.from_euler('x', 90, degrees=True)
+    #    waypoints_rob = transf.apply(waypoints_rob)
+    #    return waypoints_rob
+
+    def transform_robotframe_to_uiframe(self, waypoints):
+        waypoints_ui = waypoints.copy()
+        waypoints_ui[:, 0] *= 10
+        waypoints_ui[:, 1] *= 10
+        waypoints_ui[:, 2] *= 10
+        waypoints_ui = R.from_euler('x', -90, degrees=True).apply(waypoints_ui)
+        return waypoints_ui
+    
     def transform_uiframe_to_robotframe(self, waypoints):
-        waypoints_rob = np.array(waypoints.copy())
-        waypoints_rob /= 10
-        transf = R.from_euler('x', 90, degrees=True)
-        waypoints_rob = transf.apply(waypoints_rob)
+        waypoints_rob = waypoints.copy()
+        waypoints_rob = R.from_euler('x', 90, degrees=True).apply(waypoints_rob)
+        waypoints_rob[:, 0] /= 10
+        waypoints_rob[:, 1] /= 10
+        waypoints_rob[:, 2] /= 10
         return waypoints_rob
 
-    #def test_ui(self):
-    #    obs = self.env._get_obs()
-    #    ee_pos = obs['state']['ee_pos']
-    #    ee_quat = obs['state']['ee_quat']
-    #    ee_euler = R.from_quat(ee_quat).as_euler("xyz")
-
-    #    rgb_frame, depth_frame = self.take_rgbd()
-    #    pointcloud = self.rgbd2pointCloud(rgb_frame, depth_frame)
-
-    #    idxs = np.random.choice(np.arange(len(pointcloud.points)), 20000, replace=False)
-    #    points = np.asarray(pointcloud.points)[idxs]
-    #    colors = np.asarray(pointcloud.colors)[idxs]
-    #    points_ui = self.transform_waypoints_to_uiframe(points)
-    #    pointcloud_points_code = '[\n' + ',\n'.join(['%.2f, %.2f, %.2f'%(pos[0], pos[1], pos[2]) for pos in points_ui]) + '\n];'
-    #    pointcloud_colors_code = '[\n' + ',\n'.join(['%.2f, %.2f, %.2f'%(color[0], color[1], color[2]) for color in colors]) + '\n];'
-
-    #    waypoints = []
-    #    waypoints_fingertip = []
-    #    for i in np.linspace(0.05,0.35,5):
-    #        waypoints.append(ee_pos + [i,0,-0.1])
-
-    #    for waypoint in waypoints:
-    #        target_ee_euler = ee_euler.copy()
-    #        fingertip_offset = self.calculate_fingertip_offset(target_ee_euler)
-    #        waypoints_fingertip.append(waypoint + fingertip_offset)
-    #        #self.move_robot(waypoint, target_ee_euler)
-    #    
-    #    with open('interactive_scripts/interactive_utils/template.html') as f:
-    #        html_content = f.read()
-
-    #    waypoints_fingertip_ui = self.transform_waypoints_to_uiframe(waypoints_fingertip)
-    #    waypoints_fingertip_code = '[\n' + '\n,'.join(['{x: %.2f, y: %.2f, z: %.2f}'%(pos[0], pos[1], pos[2]) for pos in waypoints_fingertip_ui]) + '\n];'
-    #                                  
-    #    html_content = html_content%(len(waypoints), waypoints_fingertip_code, pointcloud_points_code, pointcloud_colors_code)
-    #    with open('interactive_scripts/interactive_utils/tmp.html', 'w') as f:
-    #        f.write(html_content)
-    #    #os.system('firefox interactive_scripts/interactive_utils/tmp.html')
+    def capture_point_cloud(self):
+        while True:
+            rgb_frame, depth_frame = self.take_rgbd()
+            points, colors = self.rgbd2pointCloud(rgb_frame, depth_frame)
+            idxs = np.random.choice(np.arange(len(points)), min(len(points), 1000), replace=False)
+            points_ui = self.transform_robotframe_to_uiframe(points[idxs])
+            points_ui = list(points_ui.ravel())
+            colors = list(colors[idxs].ravel())
+            self.pcl_queue.put((points_ui, colors))
+            #time.sleep(0.1)  # Adjust the sleep time as needed
 
     def test_ui(self):
         obs = self.env._get_obs()
@@ -342,14 +359,17 @@ class InteractiveBot:
         ee_euler_code = 'new THREE.Euler(%.2f, %.2f, %.2f);\n'%(ee_euler_ui[0], ee_euler_ui[1], ee_euler_ui[2])
 
         rgb_frame, depth_frame = self.take_rgbd()
-        pointcloud = self.rgbd2pointCloud(rgb_frame, depth_frame)
+        points, colors = self.rgbd2pointCloud(rgb_frame, depth_frame)
+        idxs = np.random.choice(np.arange(len(points)), 1000, replace=False)
+        points = points[idxs]
+        colors = colors[idxs]
 
-        idxs = np.random.choice(np.arange(len(pointcloud.points)), 20000, replace=False)
-        points = np.asarray(pointcloud.points)[idxs]
-        colors = np.asarray(pointcloud.colors)[idxs]
         points_ui = self.transform_robotframe_to_uiframe(points)
         pointcloud_points_code = '[\n' + ',\n'.join(['%.2f, %.2f, %.2f'%(pos[0], pos[1], pos[2]) for pos in points_ui]) + '\n];'
         pointcloud_colors_code = '[\n' + ',\n'.join(['%.2f, %.2f, %.2f'%(color[0], color[1], color[2]) for color in colors]) + '\n];'
+
+        pcl_thread = threading.Thread(target=self.capture_point_cloud, daemon=True)
+        pcl_thread.start()
 
         with open('interactive_scripts/interactive_utils/template.html') as f:
             html_content = f.read()
@@ -369,12 +389,13 @@ class InteractiveBot:
                 return [v for v in shared_pose]
 
         # Initialize the handler with the shared array
-        handler = MyWebSocketHandler(shared_pose)
+        handler = MyWebSocketHandler(shared_pose, self.pcl_queue)
         
         # Define the server coroutine
         async def server_coroutine():
             async with websockets.serve(handler.websocket_handler, "localhost", 8765):
-                await asyncio.Future()  # Run indefinitely
+                await handler.send_data_from_queue()
+                #await asyncio.Future()  # Run indefinitely
         
         # Function to start the asyncio event loop in a separate thread
         def start_asyncio_event_loop():
@@ -389,6 +410,8 @@ class InteractiveBot:
         MAX_DELTA = 0.05
 
         gripper_state = None
+
+
         while True:
             pose = get_latest_pose_cmd()
             closed = pose[-1]
@@ -403,6 +426,8 @@ class InteractiveBot:
             angle_diff = np.linalg.norm(ee_euler_cmd - ee_euler)
             pos_diff = np.linalg.norm(ee_pos_cmd - ee_pos)
 
+            print(ee_pos_cmd, ee_euler_cmd)
+
             if closed != gripper_state:
                 if closed:
                     self.close_gripper()
@@ -410,38 +435,22 @@ class InteractiveBot:
                     self.open_gripper()
             gripper_state = closed
 
-            if pos_diff < 0.1 and pos_diff > 0.01:
-                self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
-            elif angle_diff < np.pi/2 and angle_diff > 0.01:
-                print('Will rotate')
-                self.rotate_robot(ee_euler_cmd)
+            if (pos_diff < MAX_DELTA and pos_diff > 0.01) and (angle_diff < np.pi/4):
+                self.move_robot_constant(ee_pos_cmd, ee_euler_cmd, max_delta=MAX_DELTA)
+            elif ee_pos_cmd[0] > 0.28 and ee_pos_cmd[0] < 0.78 and ee_pos_cmd[1] > -0.24 and ee_pos_cmd[1] < 0.24 and ee_pos_cmd[2] > 0.18 and ee_pos_cmd[2] < 0.63:
+                start = time.time()
+                self.move_robot(ee_pos_cmd, ee_euler_cmd, max_delta=0.015)
+                end = time.time()
+                print('after', end-start)
             else:
-                #print('Do not move', angle_diff, pos_diff)
-                print('Do not move', ee_euler_cmd, ee_euler)
+                print('Do not move')
 
             obs = self.env._get_obs()
             ee_pos = obs['state']['ee_pos']
             ee_quat = obs['state']['ee_quat']
             ee_euler = R.from_quat(ee_quat).as_euler("xyz")
 
-            #if pos_diff < 0.37 and angle_diff < 1.5:
-            #    self.translate_robot(ee_pos_cmd, max_delta=MAX_DELTA)
-            #else:
-            #    print('Too big a delta', pos_diff, angle_diff)
-
         server_process.wait()
-
-    def test_angles(self):
-        obs = self.env._get_obs()
-        ee_pos = obs['state']['ee_pos']
-        ee_quat = obs['state']['ee_quat']
-        ee_euler = R.from_quat(ee_quat).as_euler("xyz")
-
-        target_ee_pos = ee_pos + [0.1, 0, 0]
-        target_ee_euler = ee_euler.copy() + [-np.pi/6, 0, 0]
-        print(target_ee_euler, ee_euler)
-
-        self.move_robot(target_ee_pos, target_ee_euler)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -453,6 +462,7 @@ if __name__ == '__main__':
         config = yaml.load(f, Loader=yaml.Loader)
 
     robot = InteractiveBot(config)
+    #robot.open_gripper()
     #rgb_frame, depth_frame = robot.take_rgbd()
     #pointcloud = robot.rgbd2pointCloud(rgb_frame, depth_frame)
 

@@ -32,12 +32,11 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/loaders/OBJLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/controls/TransformControls.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/msgpack-lite/0.1.26/msgpack.min.js"></script>
-
   <button id="startButton">Start Recording</button>
   <button id="stopButton" style="display:none;">Stop Recording</button>
   <button id="saveButton" style="display:none;">Save Recording</button>
   <video id="recordedVideo" controls></video>
+  <button id="recordButton">Record</button>
   <script>
     let stream;
     let mediaRecorder;
@@ -165,7 +164,8 @@
         const position = new THREE.Vector3(positions[i], positions[i + 1], positions[i + 2]);
         const color = new THREE.Color(colors[i], colors[i + 1], colors[i + 2]);
         // Create sphere geometry and material
-        const sphereGeometry = new THREE.BoxGeometry(0.05, 0.05, 0.05); // Adjust the size and detail of the sphere
+        //const sphereGeometry = new THREE.SphereGeometry(0.07, 1, 1); // Adjust the size and detail of the sphere
+        const sphereGeometry = new THREE.BoxGeometry(0.07, 0.07, 0.07); // Adjust the size and detail of the sphere
         const sphereMaterial = new THREE.MeshBasicMaterial({color: color, transparent: true, opacity: 1.0});
     
         // Create sphere mesh
@@ -176,6 +176,17 @@
         spheres.push(sphere); // Add sphere to the list
     }
 
+    //const pointCloudGeometry = new THREE.BufferGeometry();
+    //pointCloudGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    //pointCloudGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); // Set colors attribute
+    //const pointCloudMaterial = new THREE.PointsMaterial({
+    //    size: 0.15, // Adjust the size of the points
+    //    opacity: 0.35,
+    //    vertexColors: true, // Enable vertex colors
+    //    transparent: true
+    //});
+    //const pointCloud = new THREE.Points(pointCloudGeometry, pointCloudMaterial);
+    //scene.add(pointCloud);
 
     // Function to add object to scene
     function addObject(obj, index, url) {
@@ -334,10 +345,10 @@
       y: false,
       z: false
     };
-
+    
     function moveSelectedObjectToPos(position) {
       if (selectedObject) {
-        let pos = new THREE.Vector3(0, 1.2, 0);
+        let pos = new THREE.Vector3(0, 0.9, 0);
         pos.applyQuaternion(selectedObject.quaternion);
         console.log(pos);
         pos.x += position.x;
@@ -349,8 +360,9 @@
         updateCurvePath(); // Update the curve path after moving the object
       }
     }
-    
+
     // Function to select object
+
     function selectObject(event) {
       const raycaster = new THREE.Raycaster();
       const mouse = new THREE.Vector2();
@@ -381,7 +393,6 @@
 
     }
 
-
     // Event listener for key up
     document.addEventListener('keyup', function(event) {
       keys[event.key.toLowerCase()] = false;
@@ -390,112 +401,53 @@
 
     // Establish WebSocket connection to the server
     const socket = new WebSocket('ws://localhost:8765');
-
-socket.addEventListener('message', async function (event) {
-    // Decode the MessagePack data
-    //const data = JSON.parse(event.data);
-    const arrayBuffer = await event.data.arrayBuffer();
-    const data = msgpack.decode(new Uint8Array(arrayBuffer));
-    const newPositions = data.positions;
-    const newColors = data.colors;
-
-    // Update existing spheres with updated positions and colors
-    for (let i = 0; i < spheres.length; i++) {
-        const sphere = spheres[i];
-        const newIndex = i * 3; // Index in the new positions and colors arrays
-        if (newIndex + 2 < newPositions.length && newIndex + 2 < newColors.length) {
-            const newPosition = new THREE.Vector3(newPositions[newIndex], newPositions[newIndex + 1], newPositions[newIndex + 2]);
-            const newColor = new THREE.Color(newColors[newIndex], newColors[newIndex + 1], newColors[newIndex + 2]);
-            sphere.position.copy(newPosition);
-            sphere.material.color.copy(newColor);
-        }
-    }
-
-    // Create new spheres for any remaining new positions/colors
-    for (let i = spheres.length * 3; i < newPositions.length; i += 3) {
-        const position = new THREE.Vector3(newPositions[i], newPositions[i + 1], newPositions[i + 2]);
-        const color = new THREE.Color(newColors[i], newColors[i + 1], newColors[i + 2]);
-        const sphereGeometry = new THREE.BoxGeometry(0.05, 0.05, 0.05); // Adjust the size and detail of the sphere
-        const sphereMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 1.0 });
-        const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-        sphere.position.copy(position);
-        scene.add(sphere);
-        spheres.push(sphere);
-    }
-});
-
-
-//socket.addEventListener('message', async function (event) {
-//    const data = JSON.parse(event.data);
-//    const newPositions = data.positions;
-//    const newColors = data.colors;
-//
-//    // Remove old spheres from the scene
-//    for (const sphere of spheres) {
-//	            scene.remove(sphere);
-//	        }
-//    spheres.length = 0;  // Clear the array of old spheres
-//
-//    // Create new spheres with updated positions and colors
-//    for (let i = 0; i < newPositions.length; i += 3) {
-//	 const position = new THREE.Vector3(newPositions[i], newPositions[i + 1], newPositions[i + 2]);
-//	 const color = new THREE.Color(newColors[i], newColors[i + 1], newColors[i + 2]);
-//         const sphereGeometry = new THREE.BoxGeometry(0.05, 0.05, 0.05); // Adjust the size and detail of the sphere
-//	 const sphereMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 1.0 });
-//	 const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-//	 sphere.position.copy(position);
-//	 scene.add(sphere);
-//	 spheres.push(sphere);
-//}
-//});
     
+    const recordButton = document.getElementById('recordButton');
+	recordButton.addEventListener('click', function() {
+	  sendPositionAndOrientation();
+    });
+
     // Function to send position and orientation data of the selectedObject to the server
-    function sendPositionAndOrientation(selectedObject) {
-      // Check if the selectedObject is not null
-      if (selectedObject) {
-        // Check if the WebSocket connection is open
-        if (socket.readyState === WebSocket.OPEN) {
-          // Get position and orientation of the selectedObject
-          const position = selectedObject.position;
-          const orientation = selectedObject.rotation;
-          const index = controlPoints.indexOf(selectedObject);
-          const url = meshUrls[index];
-          console.log(url)
+    function sendPositionAndOrientation() {
+	  // Check if the WebSocket connection is open
+	  if (socket.readyState === WebSocket.OPEN) {
+	    // Create an array to store data objects for each object
+	    const allObjectsData = [];
 
-          // Create data object
-          const data = {
-            position: {
-              x: position.x,
-              y: position.y,
-              z: position.z
-            },
-            orientation: {
-              x: orientation.x,
-              y: orientation.y,
-              z: orientation.z
-            },
-            url
-          };
+	    // Iterate through each object in controlPoints array
+	    controlPoints.forEach((obj, index) => {
+	      // Get position and orientation of the object
+	      const position = obj.position;
+	      const orientation = obj.rotation;
+	      const url = meshUrls[index];
 
-          // Send data over the WebSocket connection
-          socket.send(JSON.stringify(data));
-        } else {
-          console.error('WebSocket connection is not open');
-        }
-      } else {
-        console.log('No object selected');
-      }
+	      // Create data object for the current object and add it to the array
+	      const data = {
+		position: {
+		  x: position.x,
+		  y: position.y,
+		  z: position.z
+		},
+		orientation: {
+		  x: orientation.x,
+		  y: orientation.y,
+		  z: orientation.z
+		},
+		url
+	      };
+	      allObjectsData.push(data);
+	    });
+
+	    // Send the array of data objects over the WebSocket connection as a single JSON object
+	    socket.send(JSON.stringify(allObjectsData));
+	  } else {
+	    console.error('WebSocket connection is not open');
+	  }
     }
 
     // Add an event listener to handle WebSocket connection opening
     socket.addEventListener('open', function (event) {
       console.log('WebSocket connection opened');
-
-      // Start sending position and orientation data of the selectedObject continuously
-      setInterval(function () {
-        // Replace selectedObject with your actual selected object
-        sendPositionAndOrientation(selectedObject);
-      }, 1); // Send data every 1000 milliseconds (1 second)
     });
 
 

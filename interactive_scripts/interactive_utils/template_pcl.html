@@ -26,14 +26,12 @@
     transition: opacity 0.2s ease-in-out;
   }
 </style>
-<div id="keypress-display" style="position: absolute; top: 20px; left: 800px; color: #333; background: rgba(255, 255, 255, 0.9); padding: 10px 15px; border-radius: 10px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">Key: None</div>
+<div id="keypress-display" style="position: absolute; top: 20px; left: 300px; color: #333; background: rgba(255, 255, 255, 0.9); padding: 10px 15px; border-radius: 10px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">Key: None</div>
 
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/loaders/OBJLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three/examples/js/controls/TransformControls.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/msgpack-lite/0.1.26/msgpack.min.js"></script>
-
   <button id="startButton">Start Recording</button>
   <button id="stopButton" style="display:none;">Stop Recording</button>
   <button id="saveButton" style="display:none;">Save Recording</button>
@@ -159,23 +157,35 @@
     // Generate random colors for point cloud
     const positions = %s
     const colors = %s
-    const spheres = []; // List to keep the spheres
+    //const spheres = []; // List to keep the spheres
 
-    for (let i = 0; i < positions.length; i += 3) {
-        const position = new THREE.Vector3(positions[i], positions[i + 1], positions[i + 2]);
-        const color = new THREE.Color(colors[i], colors[i + 1], colors[i + 2]);
-        // Create sphere geometry and material
-        const sphereGeometry = new THREE.BoxGeometry(0.05, 0.05, 0.05); // Adjust the size and detail of the sphere
-        const sphereMaterial = new THREE.MeshBasicMaterial({color: color, transparent: true, opacity: 1.0});
-    
-        // Create sphere mesh
-        const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-        sphere.position.copy(position);
-    
-        scene.add(sphere);
-        spheres.push(sphere); // Add sphere to the list
-    }
+    //for (let i = 0; i < positions.length; i += 3) {
+    //    const position = new THREE.Vector3(positions[i], positions[i + 1], positions[i + 2]);
+    //    const color = new THREE.Color(colors[i], colors[i + 1], colors[i + 2]);
+    //    // Create sphere geometry and material
+    //    //const sphereGeometry = new THREE.SphereGeometry(0.07, 1, 1); // Adjust the size and detail of the sphere
+    //    const sphereGeometry = new THREE.BoxGeometry(0.07, 0.07, 0.07); // Adjust the size and detail of the sphere
+    //    const sphereMaterial = new THREE.MeshBasicMaterial({color: color, transparent: true, opacity: 1.0});
+    //
+    //    // Create sphere mesh
+    //    const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    //    sphere.position.copy(position);
+    //
+    //    scene.add(sphere);
+    //    spheres.push(sphere); // Add sphere to the list
+    //}
 
+    const pointCloudGeometry = new THREE.BufferGeometry();
+    pointCloudGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    pointCloudGeometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); // Set colors attribute
+    const pointCloudMaterial = new THREE.PointsMaterial({
+        size: 0.15, // Adjust the size of the points
+        opacity: 0.35,
+        vertexColors: true, // Enable vertex colors
+        transparent: true
+    });
+    const pointCloud = new THREE.Points(pointCloudGeometry, pointCloudMaterial);
+    scene.add(pointCloud);
 
     // Function to add object to scene
     function addObject(obj, index, url) {
@@ -368,16 +378,16 @@
           return;
       }
 
-      if (isTranslationMode) {
-        const intersects = raycaster.intersectObjects(spheres);
-        if (intersects.length > 0) {
-          let intersectedPoint = intersects[0].point;
-          console.log(intersectedPoint.x, intersectedPoint.y, intersectedPoint.z);
-          moveSelectedObjectToPos(intersectedPoint);
-          intersects[0].object.material.color.set(0xff0000);
-          return;
-        }
-      }
+      //if (isTranslationMode) {
+      //  const intersects = raycaster.intersectObjects(spheres);
+      //  if (intersects.length > 0) {
+      //    let intersectedPoint = intersects[0].point;
+      //    console.log(intersectedPoint.x, intersectedPoint.y, intersectedPoint.z);
+      //    moveSelectedObjectToPos(intersectedPoint);
+      //    intersects[0].object.material.color.set(0xff0000);
+      //    return;
+      //  }
+      //}
 
     }
 
@@ -391,64 +401,6 @@
     // Establish WebSocket connection to the server
     const socket = new WebSocket('ws://localhost:8765');
 
-socket.addEventListener('message', async function (event) {
-    // Decode the MessagePack data
-    //const data = JSON.parse(event.data);
-    const arrayBuffer = await event.data.arrayBuffer();
-    const data = msgpack.decode(new Uint8Array(arrayBuffer));
-    const newPositions = data.positions;
-    const newColors = data.colors;
-
-    // Update existing spheres with updated positions and colors
-    for (let i = 0; i < spheres.length; i++) {
-        const sphere = spheres[i];
-        const newIndex = i * 3; // Index in the new positions and colors arrays
-        if (newIndex + 2 < newPositions.length && newIndex + 2 < newColors.length) {
-            const newPosition = new THREE.Vector3(newPositions[newIndex], newPositions[newIndex + 1], newPositions[newIndex + 2]);
-            const newColor = new THREE.Color(newColors[newIndex], newColors[newIndex + 1], newColors[newIndex + 2]);
-            sphere.position.copy(newPosition);
-            sphere.material.color.copy(newColor);
-        }
-    }
-
-    // Create new spheres for any remaining new positions/colors
-    for (let i = spheres.length * 3; i < newPositions.length; i += 3) {
-        const position = new THREE.Vector3(newPositions[i], newPositions[i + 1], newPositions[i + 2]);
-        const color = new THREE.Color(newColors[i], newColors[i + 1], newColors[i + 2]);
-        const sphereGeometry = new THREE.BoxGeometry(0.05, 0.05, 0.05); // Adjust the size and detail of the sphere
-        const sphereMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 1.0 });
-        const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-        sphere.position.copy(position);
-        scene.add(sphere);
-        spheres.push(sphere);
-    }
-});
-
-
-//socket.addEventListener('message', async function (event) {
-//    const data = JSON.parse(event.data);
-//    const newPositions = data.positions;
-//    const newColors = data.colors;
-//
-//    // Remove old spheres from the scene
-//    for (const sphere of spheres) {
-//	            scene.remove(sphere);
-//	        }
-//    spheres.length = 0;  // Clear the array of old spheres
-//
-//    // Create new spheres with updated positions and colors
-//    for (let i = 0; i < newPositions.length; i += 3) {
-//	 const position = new THREE.Vector3(newPositions[i], newPositions[i + 1], newPositions[i + 2]);
-//	 const color = new THREE.Color(newColors[i], newColors[i + 1], newColors[i + 2]);
-//         const sphereGeometry = new THREE.BoxGeometry(0.05, 0.05, 0.05); // Adjust the size and detail of the sphere
-//	 const sphereMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 1.0 });
-//	 const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-//	 sphere.position.copy(position);
-//	 scene.add(sphere);
-//	 spheres.push(sphere);
-//}
-//});
-    
     // Function to send position and orientation data of the selectedObject to the server
     function sendPositionAndOrientation(selectedObject) {
       // Check if the selectedObject is not null
